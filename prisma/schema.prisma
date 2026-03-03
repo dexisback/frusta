@@ -12,3 +12,52 @@ generator client {
 datasource db {
   provider = "postgresql"
 }
+
+
+enum uploadStatus {
+  INITIATED
+  UPLOADING
+  COMPLETING
+  COMPLETED
+  FAILED
+}
+
+
+model uploadSession{
+  id            String      @id @default(uuid())
+  fileName      String      
+  fileSize      BigInt
+  totalChunks   Int 
+  status        uploadStatus    @default(INITIATED)
+
+  mergeStartedAt      DateTime?
+  mergeCompletedAt    DateTime?
+
+  createdAt    DateTime     @default(now())
+  updatedAt    DateTime     @updatedAt
+
+  chunks      uploadChunk[]
+
+
+
+  @@index([status])
+}
+
+model uploadChunk{
+  id                 String     @id @default(uuid())
+  uploadSessionId    String
+  chunkIndex         Int 
+  size               Int
+
+  createdAt          DateTime        @default(now())
+
+  session            uploadSession    @relation(fields: [uploadSessionId], references: [id], onDelete: Cascade)
+
+  @@unique([uploadSessionId, chunkIndex])    //prevents duplication
+  @@index([uploadSessionId])
+}
+
+//indexing: cleanup abandoned (INCOMPLETE) uploads/recovery on server restarts/metrics dashboard   && uploadSessionId/chunkIndex to increase search speed(we need em a lot)
+
+
+
