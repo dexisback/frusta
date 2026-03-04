@@ -5,3 +5,4 @@ const app = express();
 app.use(express.json())
 app.use("/uploads", uploadRoutes)
 //todo: error middleware
+export default app
