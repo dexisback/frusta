@@ -4,7 +4,7 @@ import fs from "fs"
 import path from "path"
 import {pipeline} from "stream/promises"
 import {prisma} from "../../db/prisma.js"
-
+// prepareUploadDir, storeChunk, mergeChunks, 
 
 const UPLOAD_ROOT = path.resolve("uploads")
 const TEMP_DIR = path.join(UPLOAD_ROOT, "temp")   //making a uploads/temp folder for temp
@@ -22,8 +22,6 @@ async function existEnsurer(){
         fs.mkdirSync(FINAL_DIR)
     }
 }
-
-
 existEnsurer()
 
 

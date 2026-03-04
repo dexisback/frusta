@@ -3,13 +3,11 @@
 //uploads initiate, completeupload, chunkQuery
 //initially the upload which comes contains fileName, fileSize, totalChunks
 //a singular chunkQuery contains the chunk uploadId, chunkIndex
-//a complete is just the last's chunk chunkid
 
 import z from "zod"
-
 export const chunkQuerySchema = z.object({
     uploadId: z.string().uuid(),
-    chunkId : z.coerce.number().int().nonnegative()
+    chunkIndex : z.coerce.number().int().nonnegative()
 })
 
 
