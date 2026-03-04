@@ -79,7 +79,7 @@ export async function completedController(req: Request, res: Response){
     if(check.status === "COMPLETED"){return res.status(200).json({msg: "upload already completed "})}   //this is not 4xx because this is not really an error, but rather an idempotent success
     
     //before merge , system should verify if all chunks have been uploaded count(uploadChunks) === totalChunks   (since they aint in order)
-    const uploadedChunks = await prisma.uploadChunk.count({where: {id: uploadId}})
+    const uploadedChunks = await prisma.uploadChunk.count({where: {uploadSessionId: uploadId}})
     if(uploadedChunks !== Number(check.totalChunks)){return res.status(400).json({msg: "some chunks are still left "})}
 
     //transition update:
@@ -104,4 +104,3 @@ export async function completedController(req: Request, res: Response){
     
 
 }
-
