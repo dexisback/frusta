@@ -8,4 +8,4 @@ router.post("/chunk", chunkController)
 router.post("/complete", completedController)
 
 
-export default Router
+export default router
