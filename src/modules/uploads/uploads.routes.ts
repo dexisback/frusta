@@ -6,3 +6,6 @@ const router = Router();
 router.post("/initiate", initiateController)
 router.post("/chunk", chunkController)
 router.post("/complete", completedController)
+
+
+export default Router
