@@ -1,4 +1,4 @@
+import env from "./config/env.js" //fix: first env is validated before app/prisma init
 import app from "./app.js"
-import env from "./config/env.js"
 app.listen(env.PORT, ()=>{console.log(`up and runnin`)})
 
