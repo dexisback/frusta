@@ -1,14 +1,12 @@
 //preps storage, manage each chunk , merge chunks, renaming, cleanup
-import { TEMP_DIR, FINAL_DIR } from "./uploads.constants.js"
-import type { StoreChunkParams,MergeChunkParams, UploadSessionMeta } from "./uploads.types.js"
-import { UPLOAD_STATUS } from "./uploads.constants.js"
+import { TEMP_DIR, FINAL_DIR, UPLOAD_ROOT } from "./uploads.constants.js"
+import type { StoreChunkParams,MergeChunkParams } from "./uploads.types.js"
 import fs from "fs"
 import path from "path"
 import {pipeline} from "stream/promises"
 import {prisma} from "../../db/prisma.js"
 // prepareUploadDir, storeChunk, mergeChunks, 
 
-const UPLOAD_ROOT = path.resolve("uploads")
 //TEMP_DIR, and FINAL_DIR
 
 //we were not renaming the temp to the final, we were renaming the "tempFile" named file INSIDE the final/ folder when we are done moving
