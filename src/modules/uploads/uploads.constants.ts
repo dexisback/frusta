@@ -8,8 +8,9 @@ export const UPLOAD_ROOT = path.resolve("uploads")
 export const TEMP_DIR = path.join(UPLOAD_ROOT, "temp")
 export const FINAL_DIR = path.join(UPLOAD_ROOT, "final")
 export const UPLOAD_STATUS = {
-    INITATED: "INITATED",
+    INITIATED: "INITIATED",
     UPLOADING: "UPLOADING",
     COMPLETING: "COMPLETING",
+    COMPLETED: "COMPLETED",
     FAILED: "FAILED",
 } as const 

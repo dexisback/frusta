@@ -13,6 +13,5 @@ export type MergeChunkParams  = {
 
 export type UploadSessionMeta = {
     fileName: string,
-    fileSize: number,
-    totalChunks: number
+    fileSize: number
 }

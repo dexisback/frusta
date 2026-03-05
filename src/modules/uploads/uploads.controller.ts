@@ -3,7 +3,7 @@ import { prepareUploadDir,storeChunk, mergeChunks } from "./uploads.service.js";
 import type { Request, Response } from "express";
 import { chunkQuerySchema, completedSandeshaSchema, incomingSandeshaSchema } from "./uploads.schema.js";
 import {prisma} from "../../db/prisma.js"
-
+import { UPLOAD_STATUS } from "./uploads.constants.js";
 export async function initiateController(req: Request, res: Response){
     const result= incomingSandeshaSchema.safeParse(req.body)
     if(!result.success){
@@ -14,7 +14,7 @@ export async function initiateController(req: Request, res: Response){
 
     //when initiating upload, we create a new upload session, we store metadata about the file (fileName, fileSize, totalChunks)
     //db.push(data)    
-    const push = await prisma.uploadSession.create({data: { fileName: data.fileName, fileSize: data.fileSize, totalChunks: data.totalChunks, status: "INITIATED"}})
+    const push = await prisma.uploadSession.create({data: { fileName: data.fileName, fileSize: data.fileSize, totalChunks: data.totalChunks, status: UPLOAD_STATUS.INITIATED}})
     // console.log(push)
     const uploadId = push.id
     
@@ -45,8 +45,8 @@ export async function chunkController(req: Request, res: Response){
      //else: verified that uploadId exists in db, and current chunk index does not exceed
     
     //if the incoming req is the first req, then initiate state
-    if(weFind.status === "INITIATED"){
-        await prisma.uploadSession.update({where: {id: uploadId}, data: { status: "UPLOADING"}})
+    if(weFind.status === UPLOAD_STATUS.INITIATED){
+        await prisma.uploadSession.update({where: {id: uploadId}, data: { status: UPLOAD_STATUS.UPLOADING}})
     }
 
     
@@ -76,7 +76,7 @@ export async function completedController(req: Request, res: Response){
     //check if upload session w the given uploadId exists:
     const check = await  prisma.uploadSession.findUnique({where: {id: uploadId}})
     if(!check){return res.status(400).json({msg: "invalid upload id"})}
-    if(check.status === "COMPLETED"){return res.status(200).json({msg: "upload already completed "})}   //this is not 4xx because this is not really an error, but rather an idempotent success
+    if(check.status === UPLOAD_STATUS.COMPLETED){return res.status(200).json({msg: "upload already completed "})}   //this is not 4xx because this is not really an error, but rather an idempotent success
     
     //before merge , system should verify if all chunks have been uploaded count(uploadChunks) === totalChunks   (since they aint in order)
     const uploadedChunks = await prisma.uploadChunk.count({where: {uploadSessionId: uploadId}})
@@ -86,17 +86,17 @@ export async function completedController(req: Request, res: Response){
       await prisma.uploadSession.update({
     where: { id: uploadId },
     data: {
-      status: "COMPLETING",
+      status: UPLOAD_STATUS.COMPLETING,
       mergeStartedAt: new Date()
     }
   })
 
 
-    await mergeChunks(uploadId)
+    await mergeChunks({uploadId})
      await prisma.uploadSession.update({
     where: { id: uploadId },
     data: {
-      status: "COMPLETED",
+      status: UPLOAD_STATUS.COMPLETED,
       mergeCompletedAt: new Date()
     }
   })
