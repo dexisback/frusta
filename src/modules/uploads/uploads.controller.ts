@@ -55,8 +55,11 @@ export const chunkController = asyncHandler(async function chunkController(req: 
 
      await storeChunk({uploadId, chunkIndex, reqStream: req})      //reqStream still missing 
 
-     //record chunk metadata in db:
-     await prisma.uploadChunk.create({data: {uploadSessionId: uploadId, chunkIndex, size: Number(req.headers["content-length"]?? 0)}}).catch(()=>{})
+    //fix: chunk db stops swallowing all errors
+     await prisma.uploadChunk.createMany({
+  data: [{ uploadSessionId: uploadId, chunkIndex, size: Number(req.headers["content-length"] ?? 0) }],
+  skipDuplicates: true,
+})
 
      const uploadedChunks = await prisma.uploadChunk.count({where: {uploadSessionId: uploadId}})
     return res.status(200).json(new ApiResponse(200, "chunk stored", {uploadedChunks: uploadedChunks, totalChunks: totalChunksCode}))
@@ -93,7 +96,9 @@ export const completedController = asyncHandler(async function completedControll
     }
   })
 
-
+  //fix: throw error and update State to FAILEd if merge fails
+  try {
+    
     await mergeChunks({uploadId})
      await prisma.uploadSession.update({
     where: { id: uploadId },
@@ -103,6 +108,10 @@ export const completedController = asyncHandler(async function completedControll
     }
   })
     return res.status(200).json(new ApiResponse(200, "successs, upload complete"))
-    
+     
+  } catch (error) {
+    await prisma.uploadSession.update({where: {id: uploadId}, data: {status: UPLOAD_STATUS.FAILED}})
+    throw error
+  }
 
 })
