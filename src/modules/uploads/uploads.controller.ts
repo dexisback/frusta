@@ -61,18 +61,12 @@ export const chunkController = asyncHandler(async function chunkController(req: 
   skipDuplicates: true,
 })
 
-     const uploadedChunks = await prisma.uploadChunk.count({where: {uploadSessionId: uploadId}})
+    const uploadedChunks = await prisma.uploadChunk.count({where: {uploadSessionId: uploadId}})
     return res.status(200).json(new ApiResponse(200, "chunk stored", {uploadedChunks: uploadedChunks, totalChunks: totalChunksCode}))
     
 })
 
 export const completedController = asyncHandler(async function completedController(req: Request, res: Response){
-    //verify if session exists through uploadId
-    //check if all chunks are uploaded
-    // transition state -> uploading to completed
-    //call mergeChunks
-    //update Db to completed
-    //return succes
     const result = completedSandeshaSchema.safeParse(req.body)
     if(!result.success){
         throw new ApiError(400, "invalid query")
@@ -112,6 +106,8 @@ export const completedController = asyncHandler(async function completedControll
   } catch (error) {
     await prisma.uploadSession.update({where: {id: uploadId}, data: {status: UPLOAD_STATUS.FAILED}})
     throw error
-  }
+  }}
+)
 
-})
+
+
