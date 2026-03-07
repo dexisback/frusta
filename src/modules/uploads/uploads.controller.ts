@@ -6,11 +6,11 @@ import {prisma} from "../../db/prisma.js"
 import { UPLOAD_STATUS } from "./uploads.constants.js";
 import { ApiResponse } from "../../utils/apiResponse.js";
 import { asyncHandler } from "../../utils/asyncHandler.js";
+import { ApiError } from "../../utils/apiError.js";
 export const initiateController = asyncHandler(async function initiateController(req: Request, res: Response){
     const result= incomingSandeshaSchema.safeParse(req.body)
     if(!result.success){
-        res.status(400).json(new ApiResponse(400, "invalid incoming request"))
-        return 
+        throw new ApiError(400, "invalid incoming request")
     }
     const data= result.data
 
@@ -35,15 +35,15 @@ export const chunkController = asyncHandler(async function chunkController(req: 
     //record each chunk in db
     //chunks might NOT be in order, so currnt logic would return wrong process
     const result = chunkQuerySchema.safeParse(req.query)
-    if(!result.success){return res.status(400).json(new ApiResponse(400, "invalid chunk query"))}
+    if(!result.success){throw new ApiError(400, "invalid chunk query")}
     // const data = result.data    NOT needed 
     const {uploadId, chunkIndex} = result.data    
     
     //first check if uploadSession exists , as in id = uploadId should exist in db
     const weFind = await  prisma.uploadSession.findUnique({where: { id: uploadId}})
-    if(!weFind){return res.status(404).json(new ApiResponse(404, "did not find the uploadId in db"))}
+    if(!weFind){throw new ApiError(404, "did not find the uploadId in db")}
     const totalChunksCode= Number(weFind.totalChunks)
-    if(chunkIndex>=totalChunksCode){ return res.status(400).json(new ApiResponse(400, "the current chunk index exceeds total chunks set initially"))} 
+    if(chunkIndex>=totalChunksCode){ throw new ApiError(400, "the current chunk index exceeds total chunks set initially")} 
      //else: verified that uploadId exists in db, and current chunk index does not exceed
     
     //if the incoming req is the first req, then initiate state
@@ -75,17 +75,17 @@ export const completedController = asyncHandler(async function completedControll
     //return succes
     const result = completedSandeshaSchema.safeParse(req.body)
     if(!result.success){
-        return res.status(400).json(new ApiResponse(400, "invalid query"))
+        throw new ApiError(400, "invalid query")
     }
     const {uploadId}  = result.data
     //check if upload session w the given uploadId exists:
     const check = await  prisma.uploadSession.findUnique({where: {id: uploadId}})
-    if(!check){return res.status(400).json(new ApiResponse(400, "invalid upload id"))}
+    if(!check){throw new ApiError(400, "invalid upload id")}
     if(check.status === UPLOAD_STATUS.COMPLETED){return res.status(200).json(new ApiResponse(200, "upload already completed "))}   //this is not 4xx because this is not really an error, but rather an idempotent success
     
     //before merge , system should verify if all chunks have been uploaded count(uploadChunks) === totalChunks   (since they aint in order)
     const uploadedChunks = await prisma.uploadChunk.count({where: {uploadSessionId: uploadId}})
-    if(uploadedChunks !== Number(check.totalChunks)){return res.status(400).json(new ApiResponse(400, "some chunks are still left "))}
+    if(uploadedChunks !== Number(check.totalChunks)){throw new ApiError(400, "some chunks are still left ")}
 
     //transition update:
       await prisma.uploadSession.update({
