@@ -15,6 +15,10 @@ export const completedSandeshaSchema = z.object({
     uploadId : z.string().uuid()
 })
 
+export const statusParamsSchema = z.object({
+    uploadId: z.string().uuid()
+})
+
 
 export const incomingSandeshaSchema = z.object({
     fileName : z.string().min(1).max(200),
@@ -28,3 +32,4 @@ export const incomingSandeshaSchema = z.object({
 export type incomingSandeshaSchemaType = z.infer<typeof incomingSandeshaSchema>
 export type completedSandeshaSchemaType= z.infer<typeof completedSandeshaSchema>
 export type chunkQuerySchemaType = z.infer<typeof chunkQuerySchema>
+export type statusParamsSchemaType = z.infer<typeof statusParamsSchema>

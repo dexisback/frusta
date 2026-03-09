@@ -1,7 +1,7 @@
 
 import { prepareUploadDir,storeChunk, mergeChunks } from "./uploads.service.js";
 import type { Request, Response } from "express";
-import { chunkQuerySchema, completedSandeshaSchema, incomingSandeshaSchema } from "./uploads.schema.js";
+import { chunkQuerySchema, completedSandeshaSchema, incomingSandeshaSchema, statusParamsSchema } from "./uploads.schema.js";
 import {prisma} from "../../db/prisma.js"
 import { UPLOAD_STATUS } from "./uploads.constants.js";
 import { ApiResponse } from "../../utils/apiResponse.js";
@@ -109,5 +109,37 @@ export const completedController = asyncHandler(async function completedControll
   }}
 )
 
+export const statusController = asyncHandler(async function statusController(req: Request, res: Response){
+    const result = statusParamsSchema.safeParse(req.params)
+    if(!result.success){
+        throw new ApiError(400, "invalid upload id")
+    }
 
+    const { uploadId } = result.data
+    const session = await prisma.uploadSession.findUnique({
+        where: { id: uploadId },
+        select: { id: true, status: true, totalChunks: true }
+    })
+
+    if(!session){
+        throw new ApiError(404, "did not find the uploadId in db")
+    }
+
+    const chunkRows = await prisma.uploadChunk.findMany({
+        where: { uploadSessionId: uploadId },
+        select: { chunkIndex: true },
+        orderBy: { chunkIndex: "asc" }
+    })
+
+    const uploadedChunks = chunkRows.map((row) => row.chunkIndex)
+
+    return res.status(200).json(
+        new ApiResponse(200, "upload status fetched", {
+            uploadId: session.id,
+            status: session.status,
+            uploadedChunks,
+            totalChunks: session.totalChunks
+        })
+    )
+})
 

@@ -26,6 +26,7 @@ import {
   chunkController,
   completedController,
   initiateController,
+  statusController,
 } from "../../src/modules/uploads/uploads.controller";
 import {
   mergeChunks,
