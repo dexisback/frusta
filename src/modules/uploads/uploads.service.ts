@@ -36,12 +36,26 @@ export async function prepareUploadDir(uploadId: string){
 
 export async function storeChunk({uploadId, chunkIndex, reqStream}: StoreChunkParams){
     const chunkPath = path.join(TEMP_DIR, uploadId, `chunk${chunkIndex}`)
+    const tempChunkPath = `${chunkPath}.part`
 
-    if(fs.existsSync(chunkPath)){return} //if chunk alr exist, dont do
+    if(fs.existsSync(chunkPath)){return false} //if chunk alr exist, dont do
     
-    const writeStream = fs.createWriteStream(chunkPath)   //creating a stream to the path 
+    const writeStream = fs.createWriteStream(tempChunkPath)
 
-    await pipeline(reqStream, writeStream)
+    try {
+        await pipeline(reqStream, writeStream)
+        await fs.promises.rename(tempChunkPath, chunkPath)
+        return true
+    } catch (error) {
+        await fs.promises.rm(tempChunkPath, { force: true })
+        throw error
+    }
+}
+
+export async function deleteChunk({uploadId, chunkIndex}: Pick<StoreChunkParams, "uploadId" | "chunkIndex">){
+    const chunkPath = path.join(TEMP_DIR, uploadId, `chunk${chunkIndex}`)
+    await fs.promises.rm(chunkPath, { force: true })
+    await fs.promises.rm(`${chunkPath}.part`, { force: true })
 }
 
 

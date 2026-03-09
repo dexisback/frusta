@@ -1,5 +1,5 @@
 
-import { prepareUploadDir,storeChunk, mergeChunks } from "./uploads.service.js";
+import { deleteChunk, prepareUploadDir,storeChunk, mergeChunks } from "./uploads.service.js";
 import type { Request, Response } from "express";
 import { chunkQuerySchema, completedSandeshaSchema, incomingSandeshaSchema, statusParamsSchema } from "./uploads.schema.js";
 import {prisma} from "../../db/prisma.js"
@@ -53,13 +53,19 @@ export const chunkController = asyncHandler(async function chunkController(req: 
 
     
 
-     await storeChunk({uploadId, chunkIndex, reqStream: req})      //reqStream still missing 
+    const chunkWasWritten = await storeChunk({uploadId, chunkIndex, reqStream: req})
 
-    //fix: chunk db stops swallowing all errors
-     await prisma.uploadChunk.createMany({
-  data: [{ uploadSessionId: uploadId, chunkIndex, size: Number(req.headers["content-length"] ?? 0) }],
-  skipDuplicates: true,
-})
+    try {
+        await prisma.uploadChunk.createMany({
+            data: [{ uploadSessionId: uploadId, chunkIndex, size: Number(req.headers["content-length"] ?? 0) }],
+            skipDuplicates: true,
+        })
+    } catch (error) {
+        if(chunkWasWritten){
+            await deleteChunk({uploadId, chunkIndex})
+        }
+        throw error
+    }
 
     const uploadedChunks = await prisma.uploadChunk.count({where: {uploadSessionId: uploadId}})
     return res.status(200).json(new ApiResponse(200, "chunk stored", {uploadedChunks: uploadedChunks, totalChunks: totalChunksCode}))
@@ -129,9 +135,9 @@ export const statusController = asyncHandler(async function statusController(req
         where: { uploadSessionId: uploadId },
         select: { chunkIndex: true },
         orderBy: { chunkIndex: "asc" }
-    })
+    }) 
 
-    const uploadedChunks = chunkRows.map((row) => row.chunkIndex)
+    const uploadedChunks = chunkRows.map((row: { chunkIndex: number }) => row.chunkIndex)
 
     return res.status(200).json(
         new ApiResponse(200, "upload status fetched", {
@@ -142,4 +148,3 @@ export const statusController = asyncHandler(async function statusController(req
         })
     )
 })
-
