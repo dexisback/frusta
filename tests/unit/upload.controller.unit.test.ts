@@ -16,6 +16,7 @@ vi.mock("../../src/db/prisma.js", () => ({
 }));
 
 vi.mock("../../src/modules/uploads/uploads.service.js", () => ({
+  deleteChunk: vi.fn(),
   prepareUploadDir: vi.fn(),
   storeChunk: vi.fn(),
   mergeChunks: vi.fn(),
@@ -30,6 +31,7 @@ import {
   statusController,
 } from "../../src/modules/uploads/uploads.controller";
 import {
+  deleteChunk,
   mergeChunks,
   prepareUploadDir,
   storeChunk,
@@ -128,7 +130,7 @@ describe("uploads.controller unit", () => {
       status: UPLOAD_STATUS.INITIATED,
     } as any);
     vi.mocked(prisma.uploadSession.update).mockResolvedValue({} as any);
-    vi.mocked(storeChunk).mockResolvedValue(undefined);
+    vi.mocked(storeChunk).mockResolvedValue(true as any);
     vi.mocked(prisma.uploadChunk.createMany).mockResolvedValue({ count: 1 } as any);
     vi.mocked(prisma.uploadChunk.count).mockResolvedValue(1);
 
@@ -141,6 +143,30 @@ describe("uploads.controller unit", () => {
     expect(storeChunk).toHaveBeenCalledTimes(1);
     expect(res.status).toHaveBeenCalledWith(200);
     expect(next).not.toHaveBeenCalled();
+  });
+
+  it("chunk deletes file when db write fails", async () => {
+    const req = {
+      query: { uploadId, chunkIndex: 1 },
+      headers: { "content-length": "3" },
+    };
+    const res = makeRes();
+    const next = vi.fn();
+
+    vi.mocked(prisma.uploadSession.findUnique).mockResolvedValue({
+      id: uploadId,
+      totalChunks: 3,
+      status: UPLOAD_STATUS.INITIATED,
+    } as any);
+    vi.mocked(prisma.uploadSession.update).mockResolvedValue({} as any);
+    vi.mocked(storeChunk).mockResolvedValue(true as any);
+    vi.mocked(prisma.uploadChunk.createMany).mockRejectedValue(new Error("db fail"));
+    vi.mocked(deleteChunk).mockResolvedValue(undefined as any);
+
+    await runHandler(chunkController, req, res, next);
+
+    expect(deleteChunk).toHaveBeenCalledWith({ uploadId, chunkIndex: 1 });
+    expect(next).toHaveBeenCalledTimes(1);
   });
 
   it("complete returns 400 when chunks are missing", async () => {
@@ -181,6 +207,33 @@ describe("uploads.controller unit", () => {
     expect(mergeChunks).toHaveBeenCalledWith({ uploadId });
     expect(res.status).toHaveBeenCalledWith(200);
     expect(next).not.toHaveBeenCalled();
+  });
+
+  it("complete marks upload as FAILED when merge fails", async () => {
+    const req = { body: { uploadId } };
+    const res = makeRes();
+    const next = vi.fn();
+
+    vi.mocked(prisma.uploadSession.findUnique).mockResolvedValue({
+      id: uploadId,
+      totalChunks: 3,
+      status: UPLOAD_STATUS.UPLOADING,
+    } as any);
+    vi.mocked(prisma.uploadChunk.count).mockResolvedValue(3);
+    vi.mocked(prisma.uploadSession.update).mockResolvedValue({} as any);
+    vi.mocked(mergeChunks).mockRejectedValue(new Error("merge failed"));
+
+    await runHandler(completedController, req, res, next);
+
+    expect(prisma.uploadSession.update).toHaveBeenCalledTimes(2);
+    expect(prisma.uploadSession.update).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        where: { id: uploadId },
+        data: { status: UPLOAD_STATUS.FAILED },
+      }),
+    );
+    expect(next).toHaveBeenCalledTimes(1);
   });
 
   it("status returns upload state", async () => {

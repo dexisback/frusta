@@ -32,6 +32,7 @@ import fs from "fs";
 import { pipeline } from "stream/promises";
 import { prisma } from "../../src/db/prisma";
 import {
+  deleteChunk,
   mergeChunks,
   prepareUploadDir,
   storeChunk,
@@ -57,12 +58,13 @@ describe("uploads.service unit", () => {
   it("storeChunk skips when chunk already exists", async () => {
     vi.mocked(fs.existsSync).mockReturnValue(true);
 
-    await storeChunk({
+    const written = await storeChunk({
       uploadId,
       chunkIndex: 0,
       reqStream: {} as any,
     });
 
+    expect(written).toBe(false);
     expect(fs.createWriteStream).not.toHaveBeenCalled();
     expect(pipeline).not.toHaveBeenCalled();
   });
@@ -71,15 +73,45 @@ describe("uploads.service unit", () => {
     vi.mocked(fs.existsSync).mockReturnValue(false);
     vi.mocked(fs.createWriteStream).mockReturnValue({} as any);
     vi.mocked(pipeline).mockResolvedValue(undefined as any);
+    vi.mocked(fs.promises.rename).mockResolvedValue(undefined as any);
 
-    await storeChunk({
+    const written = await storeChunk({
       uploadId,
       chunkIndex: 1,
       reqStream: { some: "stream" } as any,
     });
 
+    expect(written).toBe(true);
     expect(fs.createWriteStream).toHaveBeenCalledTimes(1);
     expect(pipeline).toHaveBeenCalledTimes(1);
+    expect(fs.promises.rename).toHaveBeenCalledTimes(1);
+  });
+
+  it("storeChunk deletes temp file when pipeline fails", async () => {
+    vi.mocked(fs.existsSync).mockReturnValue(false);
+    vi.mocked(fs.createWriteStream).mockReturnValue({} as any);
+    vi.mocked(pipeline).mockRejectedValue(new Error("stream failed"));
+    vi.mocked(fs.promises.rm).mockResolvedValue(undefined as any);
+
+    await expect(
+      storeChunk({
+        uploadId,
+        chunkIndex: 2,
+        reqStream: { some: "stream" } as any,
+      }),
+    ).rejects.toThrow("stream failed");
+
+    expect(fs.promises.rm).toHaveBeenCalledWith(expect.stringContaining("chunk2.part"), { force: true });
+  });
+
+  it("deleteChunk removes chunk and temp chunk files", async () => {
+    vi.mocked(fs.promises.rm).mockResolvedValue(undefined as any);
+
+    await deleteChunk({ uploadId, chunkIndex: 3 });
+
+    expect(fs.promises.rm).toHaveBeenCalledTimes(2);
+    expect(fs.promises.rm).toHaveBeenNthCalledWith(1, expect.stringContaining("chunk3"), { force: true });
+    expect(fs.promises.rm).toHaveBeenNthCalledWith(2, expect.stringContaining("chunk3.part"), { force: true });
   });
 
   it("mergeChunks throws when session is missing", async () => {
