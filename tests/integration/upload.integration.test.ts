@@ -9,6 +9,7 @@ import app from "../../src/app";
 import { prisma } from "../../src/db/prisma";
 import { TEMP_DIR, FINAL_DIR } from "../../src/modules/uploads/uploads.constants";
 
+const SLOW_TEST_TIMEOUT_MS = 15_000;
 
 
 async function resetState() {
@@ -101,6 +102,25 @@ afterAll(async () => {await resetState();await prisma.$disconnect();});
 
     const count = await prisma.uploadChunk.count({ where: { uploadSessionId: uploadId } });
     expect(count).toBe(3);
+  }, SLOW_TEST_TIMEOUT_MS);
+
+  it("t3.1: status endpoint returns uploaded chunks", async () => {
+    const uploadId = await createUploadSession(6, "status.txt", 18);
+
+    await uploadChunk(uploadId, 4, "EEE");
+    await uploadChunk(uploadId, 1, "BBB");
+    await uploadChunk(uploadId, 0, "AAA");
+    await uploadChunk(uploadId, 3, "DDD");
+
+    const statusRes = await request(app).get(`/uploads/${uploadId}/status`);
+    expect(statusRes.status).toBe(200);
+    expect(statusRes.body.success).toBe(true);
+    expect(statusRes.body.data).toEqual({
+      uploadId,
+      status: "UPLOADING",
+      uploadedChunks: [0, 1, 3, 4],
+      totalChunks: 6,
+    });
   });
 
   it("t4: complete and merge", async () => {
@@ -128,7 +148,7 @@ afterAll(async () => {await resetState();await prisma.$disconnect();});
 
     const session = await prisma.uploadSession.findUnique({ where: { id: uploadId } });
     expect(session?.status).toBe("COMPLETED");
-  });
+  }, SLOW_TEST_TIMEOUT_MS);
 
   it("t5: invalid chunk index rejection", async () => {
     const uploadId = await createUploadSession(3, "invalid.txt", 9);

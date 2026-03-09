@@ -10,6 +10,7 @@ vi.mock("../../src/db/prisma.js", () => ({
     uploadChunk: {
       createMany: vi.fn(),
       count: vi.fn(),
+      findMany: vi.fn(),
     },
   },
 }));
@@ -179,6 +180,30 @@ describe("uploads.controller unit", () => {
     expect(prisma.uploadSession.update).toHaveBeenCalledTimes(2);
     expect(mergeChunks).toHaveBeenCalledWith({ uploadId });
     expect(res.status).toHaveBeenCalledWith(200);
+    expect(next).not.toHaveBeenCalled();
+  });
+
+  it("status returns upload state", async () => {
+    const req = { params: { uploadId } };
+    const res = makeRes();
+    const next = vi.fn();
+
+    vi.mocked(prisma.uploadSession.findUnique).mockResolvedValue({
+      id: uploadId,
+      status: UPLOAD_STATUS.UPLOADING,
+      totalChunks: 6,
+    } as any);
+    vi.mocked(prisma.uploadChunk.findMany).mockResolvedValue([
+      { chunkIndex: 0 },
+      { chunkIndex: 1 },
+      { chunkIndex: 3 },
+      { chunkIndex: 4 },
+    ] as any);
+
+    await runHandler(statusController, req, res, next);
+
+    expect(res.status).toHaveBeenCalledWith(200);
+    expect(res.json).toHaveBeenCalledTimes(1);
     expect(next).not.toHaveBeenCalled();
   });
 });
