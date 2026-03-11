@@ -8,7 +8,9 @@
     "dev": "node --watch --import tsx src/server.ts",
     "typecheck": "tsc --noEmit",
     "build": "tsc -p tsconfig.json",
-    "start": "node dist/server.js"
+    "start": "node dist/server.js",
+     "bench:k6:upload": "k6 run benchmarks/k6/upload-flow.js",
+    "bench:k6:upload:local": "BASE_URL=http://localhost:3000 VUS=5 DURATION=30s k6 run benchmarks/k6/upload-flow.js"
   },
   "keywords": [],
   "author": "",
@@ -30,9 +32,11 @@
     "@prisma/adapter-pg": "^7.4.2",
     "@prisma/client": "^7.4.2",
     "@types/express": "^5.0.6",
+    "@types/k6": "^1.6.0",
     "dotenv": "^17.3.1",
     "express": "^5.2.1",
     "pg": "^8.19.0",
+    "uuid": "^13.0.0",
     "zod": "^4.3.6"
   }
 }

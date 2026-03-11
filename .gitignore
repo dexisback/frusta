@@ -4,3 +4,5 @@ node_modules
 dist
 uploads/    
 tests.md
+k6-implementation.md
+
