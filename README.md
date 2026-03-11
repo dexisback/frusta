@@ -1,9 +1,5 @@
 # Frusta
 
-![Node](https://img.shields.io/badge/node-20%2B-0b3d91?style=for-the-badge&logo=node.js&logoColor=white)
-![TypeScript](https://img.shields.io/badge/typescript-5.x-1f6feb?style=for-the-badge&logo=typescript&logoColor=white)
-![Tests](https://img.shields.io/badge/tests-29%2F29%20passing-1f883d?style=for-the-badge)
-![License](https://img.shields.io/badge/license-ISC-6f42c1?style=for-the-badge)
 
 ```text
 ______              _        
