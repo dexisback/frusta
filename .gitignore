@@ -5,4 +5,4 @@ dist
 uploads/    
 tests.md
 k6-implementation.md
-
+bench-uploads/
