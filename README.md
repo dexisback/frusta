@@ -42,6 +42,128 @@ It accepts out-of-order and parallel chunk uploads, supports resume, enforces id
 - Request logging middleware with latency printouts
 - Test-time in-memory Prisma fallback for fast deterministic integration testing
 
+## Architecture
+
+### System Diagram
+
+```mermaid
+%%{init: {'theme': 'base', 'themeVariables': { 'primaryColor': '#e1f5fe', 'primaryTextColor': '#01579b', 'primaryBorderColor': '#0288d1', 'lineColor': '#0288d1', 'secondaryColor': '#e8f5e9', 'tertiaryColor': '#fff3e0'}}}%%
+graph TB
+    subgraph "Client"
+        C1[Browser / Mobile App / k6]
+    end
+
+    subgraph "HTTP Layer"
+        A1[Express App<br/>src/app.ts]
+        A2[Upload Router<br/>src/modules/uploads/uploads.routes.ts]
+    end
+
+    subgraph "Cross-Cutting Middleware"
+        M1[requestLogger]
+        M2[express.json]
+        M3[notFound]
+        M4[errorHandler]
+    end
+
+    subgraph "Controller Layer<br/>src/modules/uploads/uploads.controller.ts"
+        CTRL1[initiateController]
+        CTRL2[chunkController]
+        CTRL3[statusController]
+        CTRL4[completedController]
+    end
+
+    subgraph "Validation Layer<br/>src/modules/uploads/uploads.schema.ts"
+        V1[Zod: incomingSandesha]
+        V2[Zod: chunkQuery]
+        V3[Zod: completedSandesha]
+        V4[Zod: statusParams]
+    end
+
+    subgraph "Service Layer<br/>src/modules/uploads/uploads.service.ts"
+        S1[prepareUploadDir]
+        S2[storeChunk<br/>stream pipeline + atomic rename]
+        S3[deleteChunk<br/>rollback cleanup]
+        S4[mergeChunks<br/>ordered stream merge + atomic rename]
+    end
+
+    subgraph "Data Layer<br/>src/db/prisma.ts"
+        D1[Prisma Client]
+        D2[(PostgreSQL)]
+        D3[(In-Memory Adapter<br/>Test Fallback)]
+    end
+
+    subgraph "File System Storage"
+        F1[uploads/temp/&lt;uploadId&gt;/chunkN]
+        F2[uploads/final/&lt;uploadId&gt;-&lt;fileName&gt;]
+    end
+
+    C1 -->|POST /uploads/initiate| A1
+    C1 -->|POST /uploads/chunk| A1
+    C1 -->|GET /uploads/:id/status| A1
+    C1 -->|POST /uploads/complete| A1
+
+    A1 --> M2
+    M2 --> M1
+    M1 --> A2
+    A2 --> CTRL1
+    A2 --> CTRL2
+    A2 --> CTRL3
+    A2 --> CTRL4
+
+    CTRL1 --> V1
+    CTRL2 --> V2
+    CTRL4 --> V3
+    CTRL3 --> V4
+
+    CTRL1 -->|create uploadSession| D1
+    CTRL1 --> S1
+    CTRL2 -->|findUnique uploadSession| D1
+    CTRL2 -->|update status UPLOADING| D1
+    CTRL2 --> S2
+    CTRL2 -->|createMany skipDuplicates| D1
+    CTRL2 -->|count uploadedChunks| D1
+    CTRL3 -->|findUnique + findMany| D1
+    CTRL4 -->|findUnique uploadSession| D1
+    CTRL4 -->|count chunks vs totalChunks| D1
+    CTRL4 -->|update COMPLETING| D1
+    CTRL4 --> S4
+    CTRL4 -->|update COMPLETED/FAILED| D1
+
+    S1 --> F1
+    S2 -->|write .part → rename chunkN| F1
+    S3 -->|rm chunkN / .part| F1
+    S4 -->|read chunk0..N| F1
+    S4 -->|write .part → rename final| F2
+    S4 -->|rm temp dir| F1
+
+    D1 --> D2
+    D1 -.-> D3
+
+    A2 --> M3
+    M3 --> M4
+    M4 --> C1
+```
+
+### Upload Session State Machine
+
+```mermaid
+stateDiagram-v2
+    [*] --> INITIATED : POST /initiate
+    INITIATED --> UPLOADING : first chunk arrives
+    UPLOADING --> UPLOADING : chunk N stored
+    UPLOADING --> COMPLETING : POST /complete<br/>all chunks verified
+    COMPLETING --> COMPLETED : merge + atomic rename success
+    COMPLETING --> FAILED : merge error / exception
+    UPLOADING --> FAILED : unhandled error
+```
+
+### Data Flow Highlights
+
+1. **Initiate**: Client → Router → `initiateController` → Zod validation → Prisma (`uploadSession.create`) → `prepareUploadDir` → Temp directory created.
+2. **Chunk Ingest**: Client → Router → `chunkController` → Zod validation → Prisma (`uploadSession.findUnique` + `update`) → `storeChunk` (stream pipeline, atomic `.part` → `chunkN` rename) → Prisma (`uploadChunk.createMany` with `skipDuplicates`) → On DB failure, `deleteChunk` rolls back the file.
+3. **Status / Resume**: Client → Router → `statusController` → Prisma (`uploadSession.findUnique` + `uploadChunk.findMany`) → Returns `uploadedChunks[]` array.
+4. **Complete / Merge**: Client → Router → `completedController` → Zod validation → Prisma (`count` verification) → Status `COMPLETING` → `mergeChunks` (ordered stream pipeline into `.part`, atomic rename to final, recursive temp cleanup) → Prisma status `COMPLETED` (or `FAILED` on error).
+
 ## Upload Flow
 
 1. `POST /uploads/initiate` creates an upload session row and a temp directory for `uploadId`.
