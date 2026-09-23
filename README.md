@@ -37,8 +37,22 @@ It accepts out-of-order and parallel chunk uploads, supports resume, enforces id
   - Final merge to `<uploadId>-<fileName>.part` then atomic rename to final file
 - Automatic temp cleanup after successful merge
 - Failure rollback in chunk ingest path (if DB write fails after file write, chunk file is removed)
-- Zod request validation for body/query/params
-- Centralized error and not-found middleware
+- Zod request validation for body/query/params with per-field error details
+- Input hardening:
+  - Global limits: `fileSize <= 5 GiB`, `totalChunks <= 10,000`, `chunkIndex` bounded
+  - `fileName` sanitization: no path separators / control characters, re-verified at merge (path-traversal safe)
+  - Cross-field refines: `fileSize >= totalChunks`, `fileSize <= totalChunks * 16 MiB`
+  - Chunk `content-length` gate: required (`411`), positive integer, `<= 16 MiB` (`413`)
+  - Stream byte-limiter: aborts mid-upload when streamed bytes exceed the cap (catches lying clients)
+  - Per-chunk quota: a chunk cannot push the uploaded total past the declared `fileSize`
+  - Content-type gate: chunk bodies must be `application/octet-stream` (`415`), so the body parser can never consume the upload stream
+- Content-level validation:
+  - Video extension allowlist at initiate: `.mp4 .m4v .webm .mkv .mov`
+  - Magic-number fingerprinting of the merged bytes via `file-type` — renamed executables/text are rejected even with a valid name
+  - Optional `sha256` checksum declared at complete, verified against the merged bytes with a streaming hash
+  - Merged size must exactly equal the declared `fileSize`
+  - Failed content checks delete the final artifact and mark the session `FAILED`
+- Centralized error and not-found middleware (body-parser failures mapped to `400`/`413`)
 - Request logging middleware with latency printouts
 - Test-time in-memory Prisma fallback for fast deterministic integration testing
 
@@ -81,9 +95,10 @@ graph TB
 
     subgraph "Service Layer<br/>src/modules/uploads/uploads.service.ts"
         S1[prepareUploadDir]
-        S2[storeChunk<br/>stream pipeline + atomic rename]
+        S2[storeChunk<br/>byte-limited stream pipeline + atomic rename]
         S3[deleteChunk<br/>rollback cleanup]
         S4[mergeChunks<br/>ordered stream merge + atomic rename]
+        S5[fileValidator.service<br/>magic numbers + sha256]
     end
 
     subgraph "Data Layer<br/>src/db/prisma.ts"
@@ -134,6 +149,8 @@ graph TB
     S3 -->|rm chunkN / .part| F1
     S4 -->|read chunk0..N| F1
     S4 -->|write .part → rename final| F2
+    S4 --> S5
+    S5 -->|delete final + FAILED on mismatch| F2
     S4 -->|rm temp dir| F1
 
     D1 --> D2
@@ -172,9 +189,40 @@ stateDiagram-v2
 4. `GET /uploads/:uploadId/status` returns `uploadedChunks[]` so clients resume only missing indexes.
 5. `POST /uploads/complete` verifies `uploadedChunks === totalChunks`, merges in index order, atomically renames final artifact, then deletes temp chunk directory.
 
+5. `POST /uploads/complete` verifies `uploadedChunks === totalChunks`, merges in index order, atomically renames the final artifact, verifies its size, magic numbers, and optional sha256 checksum, then deletes the temp chunk directory.
+
+## Validation Layers
+
+Request content is verified by what the bytes are, not what the name claims:
+
+| Gate | Where | On failure |
+|---|---|---|
+| Extension allowlist (video only) | initiate (schema) | `400`, nothing stored |
+| fileName sanitization (no traversal) | initiate (schema) + merge (service) | `400` / merge refused |
+| Global limits (`fileSize`, `totalChunks`, `chunkIndex`) | initiate / chunk (schema) | `400` with field details |
+| `content-length` required, positive, `<= 16 MiB` | chunk (controller) | `411` / `400` / `413` |
+| Stream byte-limiter (actual bytes on the wire) | chunk (service) | `413`, stream aborted, temp file removed |
+| Per-chunk quota vs declared `fileSize` | chunk (controller) | `400` before any write |
+| `application/octet-stream` content-type | chunk (controller) | `415` |
+| Session state guard | chunk / complete (controller) | `409` |
+| Merged size == declared `fileSize` | complete (service) | `400`, final file deleted, session `FAILED` |
+| Magic numbers (`file-type`) must be an allowed video mime | complete (service) | `400`, final file deleted, session `FAILED` |
+| Declared sha256 checksum matches merged bytes | complete (service, optional) | `400`, final file deleted, session `FAILED` |
+
 ## API
 
 Base path: `/uploads`
+
+All validation failures return `400` (`success: false`) with `data` mapping each rejected field to its error messages:
+
+```json
+{
+  "success": false,
+  "statusCode": 400,
+  "message": "Validation failed",
+  "data": { "fileName": ["fileName contains illegal path characters"] }
+}
+```
 
 ### 1) Initiate Upload
 
@@ -203,8 +251,8 @@ Base path: `/uploads`
 ### 2) Upload Chunk
 
 - `POST /uploads/chunk?uploadId=<uuid>&chunkIndex=<int>`
-- Headers: `Content-Type: application/octet-stream`
-- Body: raw chunk bytes
+- Headers: `Content-Type: application/octet-stream` (anything else → `415`)
+- Body: raw chunk bytes; a `content-length` header is required (`411`), must be a positive integer and at most 16 MiB (`413`); a chunk that would push the uploaded total past the declared `fileSize` is rejected (`400`)
 - Success: `200`
 
 ```json
@@ -242,12 +290,16 @@ Base path: `/uploads`
 
 ```json
 {
-  "uploadId": "uuid"
+  "uploadId": "uuid",
+  "checksum": "64-char sha256 hex of the expected merged bytes (optional)"
 }
 ```
 
 - Success: `200`
 - Idempotent behavior: if already completed, returns `200` with `"upload already completed"`.
+- When `checksum` is declared, the merged bytes are streamed through sha256 and compared; a mismatch returns `400`, deletes the final file, and marks the session `FAILED`.
+- The merged artifact is also verified for exact size and video magic numbers before the session is marked `COMPLETED`.
+- `409` when the session is `COMPLETING` (merge in progress) or `FAILED`.
 
 ## Storage and Merge Semantics
 
@@ -294,15 +346,17 @@ src/
     errorHandler.middleware.ts
   modules/uploads/
     uploads.routes.ts             # upload route map
-    uploads.schema.ts             # zod contracts
-    uploads.controller.ts         # request orchestration
+    uploads.schema.ts             # zod contracts (limits, sanitization, checksum format)
+    uploads.controller.ts         # request orchestration + per-request guards
     uploads.service.ts            # fs/stream chunk + merge engine
-    uploads.constants.ts          # status constants + storage paths
+    fileValidator.service.ts      # magic-number + sha256 verification of merged bytes
+    uploads.constants.ts          # statuses, storage paths, upload limits, format allowlists
     uploads.types.ts
   utils/
     apiError.ts
     apiResponse.ts
     asyncHandler.ts
+    validation.ts
 
 prisma/
   schema.prisma
@@ -381,16 +435,17 @@ Run:
 npm test
 ```
 
-Current snapshot (run on March 12, 2026):
+Current snapshot (run on September 24, 2026):
 
-- `29/29` tests passing
-- Unit: `23` (controller + service + schema)
-- Integration: `6` (full HTTP upload flow)
+- `62/62` tests passing
+- Unit: `44` (controller `13` + service `10` + schema `21`)
+- Integration: `18` (full HTTP upload flow + content-level validation paths)
 
 Notes:
 
 - In `NODE_ENV=test`, DB defaults to in-memory Prisma adapter unless `FRUSTA_TEST_USE_REAL_DB=true`.
-- Integration tests cover upload initiation, chunk ingest, out-of-order behavior, status/resume API, complete/merge path, and invalid index rejection.
+- Integration tests cover upload initiation, chunk ingest, out-of-order behavior, status/resume API, complete/merge path, invalid index rejection, path traversal / extension rejections, content-length / quota / content-type gates, and the magic-number + sha256 verification paths (including a renamed-executable payload).
+- Full test inventory lives in `tests/tests-description.md`.
 
 ## Benchmark (k6) Snapshot
 
@@ -429,6 +484,8 @@ Threshold status for this run:
 - Atomic renames protect against partial file visibility.
 - Session/chunk split in DB keeps metadata clean and queryable.
 - Idempotent chunk semantics make retries safe under network noise and client duplication.
+- Content is verified by what the bytes are, not what the name claims: extension allowlist at declare time, magic numbers + exact size + optional sha256 on the merged artifact.
+- Limits are enforced twice (schema validates, service enforces), so a misbehaving client cannot outsize its declaration.
 - Controller/service separation keeps the upload engine modular and easy to evolve.
 
 ## License
