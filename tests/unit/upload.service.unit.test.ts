@@ -12,6 +12,10 @@ vi.mock("stream/promises", () => ({
   pipeline: vi.fn(),
 }));
 
+vi.mock("file-type", () => ({
+  fileTypeFromFile: vi.fn(),
+}));
+
 vi.mock("fs", () => {
   const fsMock = {
     existsSync: vi.fn(),
@@ -30,7 +34,9 @@ vi.mock("fs", () => {
 });
 
 import fs from "fs";
+import crypto from "crypto";
 import { pipeline } from "stream/promises";
+import { fileTypeFromFile } from "file-type";
 import { prisma } from "../../src/db/prisma";
 import {
   deleteChunk,
@@ -146,7 +152,7 @@ describe("uploads.service unit", () => {
 
     vi.mocked(prisma.uploadSession.findUnique).mockResolvedValue({
       id: uploadId,
-      fileName: "merge.txt",
+      fileName: "merge.mp4",
       fileSize: 12n,
       totalChunks: 2,
     } as any);
@@ -159,7 +165,7 @@ describe("uploads.service unit", () => {
     vi.mocked(fs.promises.rm).mockResolvedValue(undefined as any);
 
     await expect(mergeChunks({ uploadId })).rejects.toThrow("does not match the declared file size");
-    expect(fs.promises.rm).toHaveBeenCalledWith(expect.stringContaining("merge.txt"), { force: true });
+    expect(fs.promises.rm).toHaveBeenCalledWith(expect.stringContaining("merge.mp4"), { force: true });
     expect(fs.promises.rm).not.toHaveBeenCalledWith(expect.stringContaining("temp"), expect.anything());
   });
 
@@ -176,7 +182,7 @@ describe("uploads.service unit", () => {
 
     vi.mocked(prisma.uploadSession.findUnique).mockResolvedValue({
       id: uploadId,
-      fileName: "merge.txt",
+      fileName: "merge.mp4",
       fileSize: 12n,
       totalChunks: 2,
     } as any);
@@ -184,6 +190,7 @@ describe("uploads.service unit", () => {
     vi.mocked(fs.createWriteStream).mockReturnValue(writeStream as any);
     vi.mocked(fs.createReadStream).mockReturnValue({} as any);
     vi.mocked(pipeline).mockResolvedValue(undefined as any);
+    vi.mocked(fileTypeFromFile).mockResolvedValue({ mime: "video/mp4", ext: "mp4" } as any);
     vi.mocked(fs.promises.rename).mockResolvedValue(undefined as any);
     vi.mocked(fs.promises.stat).mockResolvedValue({ size: 12 } as any);
     vi.mocked(fs.promises.rm).mockResolvedValue(undefined as any);
@@ -194,5 +201,85 @@ describe("uploads.service unit", () => {
     expect(pipeline).toHaveBeenCalledTimes(2);
     expect(fs.promises.rename).toHaveBeenCalledTimes(1);
     expect(fs.promises.rm).toHaveBeenCalledTimes(1);
+  });
+
+  it("mergeChunks rejects merged bytes that are not an allowed video type", async () => {
+    const writeStream = {
+      end: vi.fn(),
+      on: vi.fn((event: string, cb: () => void) => {
+        if (event === "finish") {
+          setImmediate(cb);
+        }
+        return writeStream;
+      }),
+    };
+
+    vi.mocked(prisma.uploadSession.findUnique).mockResolvedValue({
+      id: uploadId,
+      fileName: "fake.mp4",
+      fileSize: 12n,
+      totalChunks: 2,
+    } as any);
+    vi.mocked(fs.existsSync).mockReturnValue(true);
+    vi.mocked(fs.createWriteStream).mockReturnValue(writeStream as any);
+    vi.mocked(fs.createReadStream).mockReturnValue({} as any);
+    vi.mocked(pipeline).mockResolvedValue(undefined as any);
+    vi.mocked(fileTypeFromFile).mockResolvedValue({ mime: "application/x-msdownload", ext: "exe" } as any);
+    vi.mocked(fs.promises.rename).mockResolvedValue(undefined as any);
+    vi.mocked(fs.promises.stat).mockResolvedValue({ size: 12 } as any);
+    vi.mocked(fs.promises.rm).mockResolvedValue(undefined as any);
+
+    await expect(mergeChunks({ uploadId })).rejects.toThrow("does not match an allowed video format");
+    expect(fs.promises.rm).toHaveBeenCalledWith(expect.stringContaining("fake.mp4"), { force: true });
+    expect(fs.promises.rm).not.toHaveBeenCalledWith(expect.stringContaining("temp"), expect.anything());
+  });
+
+  it("mergeChunks verifies the declared sha256 checksum of the merged bytes", async () => {
+    const writeStream = {
+      end: vi.fn(),
+      on: vi.fn((event: string, cb: () => void) => {
+        if (event === "finish") {
+          setImmediate(cb);
+        }
+        return writeStream;
+      }),
+    };
+    const chunkBytes = Buffer.from("hello");
+    const fakeReadStream = (data: Buffer) => ({
+      on: vi.fn((event: string, handler: (arg?: any) => void) => {
+        if (event === "data") {
+          setImmediate(() => handler(data));
+        } else if (event === "end") {
+          setImmediate(() => handler());
+        }
+        return fakeReadStream;
+      }),
+    });
+
+    vi.mocked(prisma.uploadSession.findUnique).mockResolvedValue({
+      id: uploadId,
+      fileName: "hashed.mp4",
+      fileSize: 5n,
+      totalChunks: 1,
+    } as any);
+    vi.mocked(fs.existsSync).mockReturnValue(true);
+    vi.mocked(fs.createWriteStream).mockReturnValue(writeStream as any);
+    vi.mocked(fs.createReadStream).mockReturnValue(fakeReadStream(chunkBytes) as any);
+    vi.mocked(pipeline).mockResolvedValue(undefined as any);
+    vi.mocked(fileTypeFromFile).mockResolvedValue({ mime: "video/mp4", ext: "mp4" } as any);
+    vi.mocked(fs.promises.rename).mockResolvedValue(undefined as any);
+    vi.mocked(fs.promises.stat).mockResolvedValue({ size: 5 } as any);
+    vi.mocked(fs.promises.rm).mockResolvedValue(undefined as any);
+
+    const correctChecksum = crypto.createHash("sha256").update(chunkBytes).digest("hex");
+    const wrongChecksum = correctChecksum.replace(/^./, "f");
+
+    //matching checksum passes
+    await expect(mergeChunks({ uploadId, expectedChecksum: correctChecksum })).resolves.toBeUndefined();
+    //mismatching checksum is rejected and the file is deleted
+    await expect(mergeChunks({ uploadId, expectedChecksum: wrongChecksum })).rejects.toThrow(
+      "does not match the declared checksum",
+    );
+    expect(fs.promises.rm).toHaveBeenCalledWith(expect.stringContaining("hashed.mp4"), { force: true });
   });
 });

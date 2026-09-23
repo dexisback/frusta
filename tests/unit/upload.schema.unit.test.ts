@@ -66,7 +66,7 @@ describe("uploads.schema unit", () => {
 describe("uploads.schema validation hardening", () => {
   it("accepts a 1-byte-per-chunk upload", () => {
     const result = incomingSandeshaSchema.safeParse({
-      fileName: "tiny.txt",
+      fileName: "tiny.mp4",
       fileSize: 3,
       totalChunks: 3,
     });
@@ -98,7 +98,7 @@ describe("uploads.schema validation hardening", () => {
 
   it("rejects fileName longer than the limit", () => {
     const result = incomingSandeshaSchema.safeParse({
-      fileName: "a".repeat(256),
+      fileName: `${"a".repeat(252)}.mp4`, //252 + 4 = 256 characters
       fileSize: 10,
       totalChunks: 2,
     });
@@ -106,9 +106,33 @@ describe("uploads.schema validation hardening", () => {
     expect(result.success).toBe(false);
   });
 
+  it("accepts every allowed video extension", () => {
+    for (const fileName of ["a.mp4", "a.m4v", "a.webm", "a.mkv", "a.MOV"]) {
+      const result = incomingSandeshaSchema.safeParse({
+        fileName,
+        fileSize: 10,
+        totalChunks: 2,
+      });
+
+      expect(result.success).toBe(true);
+    }
+  });
+
+  it("rejects non-video extensions, double extensions and missing extensions", () => {
+    for (const fileName of ["notes.txt", "payload.exe", "movie.mp4.exe", "noextension"]) {
+      const result = incomingSandeshaSchema.safeParse({
+        fileName,
+        fileSize: 10,
+        totalChunks: 2,
+      });
+
+      expect(result.success).toBe(false);
+    }
+  });
+
   it("rejects fileSize above the limit", () => {
     const result = incomingSandeshaSchema.safeParse({
-      fileName: "huge.iso",
+      fileName: "huge.mp4",
       fileSize: String(5n * 1024n * 1024n * 1024n + 1n),
       totalChunks: 10000,
     });
@@ -118,7 +142,7 @@ describe("uploads.schema validation hardening", () => {
 
   it("rejects totalChunks above the limit", () => {
     const result = incomingSandeshaSchema.safeParse({
-      fileName: "many.txt",
+      fileName: "many.mp4",
       fileSize: 10001,
       totalChunks: 10001,
     });
@@ -128,7 +152,7 @@ describe("uploads.schema validation hardening", () => {
 
   it("rejects totalChunks larger than the file itself", () => {
     const result = incomingSandeshaSchema.safeParse({
-      fileName: "bad-plan.txt",
+      fileName: "bad-plan.mp4",
       fileSize: 2,
       totalChunks: 3,
     });
@@ -143,5 +167,35 @@ describe("uploads.schema validation hardening", () => {
     });
 
     expect(result.success).toBe(false);
+  });
+});
+
+describe("uploads.schema checksum validation", () => {
+  it("accepts a valid sha256 hex checksum", () => {
+    const result = completedSandeshaSchema.safeParse({
+      uploadId: "7d6be4f4-c97a-4abe-b0ce-4050bbceee5a",
+      checksum: "a".repeat(64),
+    });
+
+    expect(result.success).toBe(true);
+  });
+
+  it("accepts an omitted checksum", () => {
+    const result = completedSandeshaSchema.safeParse({
+      uploadId: "7d6be4f4-c97a-4abe-b0ce-4050bbceee5a",
+    });
+
+    expect(result.success).toBe(true);
+  });
+
+  it("rejects malformed checksums", () => {
+    for (const checksum of ["a".repeat(63), `z${"a".repeat(63)}`, "a".repeat(65)]) {
+      const result = completedSandeshaSchema.safeParse({
+        uploadId: "7d6be4f4-c97a-4abe-b0ce-4050bbceee5a",
+        checksum,
+      });
+
+      expect(result.success).toBe(false);
+    }
   });
 });

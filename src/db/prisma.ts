@@ -130,6 +130,15 @@ class InMemoryPrisma {
       }
       return count;
     },
+    aggregate: async ({ where }: { where: { uploadSessionId: string } }) => {
+      let total = 0;
+      for (const chunk of this.chunks.values()) {
+        if (chunk.uploadSessionId === where.uploadSessionId) {
+          total += chunk.size;
+        }
+      }
+      return { _sum: { size: total } };
+    },
     findMany: async ({
       where,
       select,

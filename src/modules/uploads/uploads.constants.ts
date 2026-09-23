@@ -21,3 +21,15 @@ export const MAX_TOTAL_CHUNKS = 10_000
 export const MAX_FILE_NAME_LENGTH = 255
 //no path separators, control chars or windows-reserved chars -> fileName can never escape its upload dir
 export const SAFE_FILE_NAME_REGEX = /^[^\\/\u0000-\u001f\u007f<>:"|?*]+$/
+
+//frusta is a video workspace: only video containers may be uploaded.
+//extension allowlist gates the declare step, magic numbers gate the bytes themselves
+export const ALLOWED_FILE_EXTENSIONS = new Set([".mp4", ".m4v", ".webm", ".mkv", ".mov"])
+//mimes exactly as the file-type library reports them (verified against its detectors)
+export const ALLOWED_MIME_TYPES = new Set([
+    "video/mp4", //mp4
+    "video/x-m4v", //m4v
+    "video/webm", //webm
+    "video/matroska", //mkv
+    "video/quicktime", //mov
+])

@@ -8,7 +8,8 @@ export type StoreChunkParams  ={
 
 
 export type MergeChunkParams  = {
-    uploadId: string    
+    uploadId: string,
+    expectedChecksum?: string | null
 }
 
 export type UploadSessionMeta = {

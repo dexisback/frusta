@@ -7,6 +7,7 @@ import { Transform } from "stream"
 import {pipeline} from "stream/promises"
 import {prisma} from "../../db/prisma.js"
 import { ApiError } from "../../utils/apiError.js"
+import { validateFinalFile } from "./fileValidator.service.js"
 // prepareUploadDir, storeChunk, mergeChunks, 
 
 //TEMP_DIR, and FINAL_DIR
@@ -79,7 +80,7 @@ export async function deleteChunk({uploadId, chunkIndex}: Pick<StoreChunkParams,
 
 
 
-export async function mergeChunks({uploadId}: MergeChunkParams){
+export async function mergeChunks({uploadId, expectedChecksum}: MergeChunkParams){
     const session = await prisma.uploadSession.findUnique({
         where: { id: uploadId }
     })
@@ -118,11 +119,21 @@ export async function mergeChunks({uploadId}: MergeChunkParams){
 
     await fs.promises.rename(finalTempPath, finalPath)  //atomic rename 
 
-    //integrity check: the merged file must be exactly the size that was declared at initiate
-    const mergedStat = await fs.promises.stat(finalPath)
-    if(BigInt(mergedStat.size) !== session.fileSize){
+    //content-level verification of the actual merged bytes; any failure deletes the
+    //final file so disallowed content never stays on disk
+    try {
+        //integrity: merged size must be exactly the size declared at initiate
+        const mergedStat = await fs.promises.stat(finalPath)
+        if(BigInt(mergedStat.size) !== session.fileSize){
+            throw new ApiError(400, "merged file size does not match the declared file size")
+        }
+
+        //integrity: magic numbers must be an allowed video type, and when a checksum
+        //was declared the bytes must hash to it
+        await validateFinalFile({ filePath: finalPath, expectedChecksum })
+    } catch (error) {
         await fs.promises.rm(finalPath, { force: true })
-        throw new ApiError(400, "merged file size does not match the declared file size")
+        throw error
     }
 
     await fs.promises.rm(chunkDir, { recursive: true, force: true }) //cleanup chunk dir

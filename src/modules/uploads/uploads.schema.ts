@@ -5,7 +5,9 @@
 //a singular chunkQuery contains the chunk uploadId, chunkIndex
 
 import z from "zod"
+import path from "path"
 import {
+    ALLOWED_FILE_EXTENSIONS,
     MAX_CHUNK_SIZE_BYTES,
     MAX_FILE_NAME_LENGTH,
     MAX_FILE_SIZE_BYTES,
@@ -14,13 +16,18 @@ import {
 } from "./uploads.constants.js"
 
 //fileName lands inside path.join(FINAL_DIR, `${uploadId}-${fileName}`),
-//so it must never carry path separators or control characters (path traversal)
+//so it must never carry path separators or control characters (path traversal),
+//and only video extensions may be declared
 const fileNameSchema = z
     .string()
     .trim()
     .min(1, "fileName is required")
     .max(MAX_FILE_NAME_LENGTH, `fileName must be at most ${MAX_FILE_NAME_LENGTH} characters`)
     .regex(SAFE_FILE_NAME_REGEX, "fileName contains illegal path characters")
+    .refine(
+        (name) => ALLOWED_FILE_EXTENSIONS.has(path.extname(name).toLowerCase()),
+        { message: `fileName must have an allowed video extension (${[...ALLOWED_FILE_EXTENSIONS].join(", ")})` },
+    )
 
 export const chunkQuerySchema = z.object({
     uploadId: z.string().uuid(),
@@ -33,7 +40,13 @@ export const chunkQuerySchema = z.object({
 
 
 export const completedSandeshaSchema = z.object({
-    uploadId: z.string().uuid()
+    uploadId: z.string().uuid(),
+    //optional integrity proof: sha256 of the merged bytes, declared by the uploader.
+    //when present, the service hashes the merged file and rejects any mismatch
+    checksum: z
+        .string()
+        .regex(/^[a-f0-9]{64}$/i, "checksum must be a 64 character sha256 hex digest")
+        .optional(),
 })
 
 export const statusParamsSchema = z.object({

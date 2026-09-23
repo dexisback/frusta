@@ -11,6 +11,7 @@ vi.mock("../../src/db/prisma.js", () => ({
       createMany: vi.fn(),
       count: vi.fn(),
       findMany: vi.fn(),
+      aggregate: vi.fn(),
     },
   },
 }));
@@ -62,7 +63,7 @@ describe("uploads.controller unit", () => {
   });
 
   it("initiate success returns 201", async () => {
-    const req = { body: { fileName: "a.txt", fileSize: 10, totalChunks: 3 } };
+    const req = { body: { fileName: "a.mp4", fileSize: 10, totalChunks: 3 } };
     const res = makeRes();
     const next = vi.fn();
 
@@ -88,6 +89,18 @@ describe("uploads.controller unit", () => {
     expect(next.mock.calls[0][0]?.statusCode).toBe(400);
   });
 
+  it("initiate rejects disallowed file extension", async () => {
+    const req = { body: { fileName: "payload.exe", fileSize: 10, totalChunks: 3 } };
+    const res = makeRes();
+    const next = vi.fn();
+
+    await runHandler(initiateController, req, res, next);
+
+    expect(next).toHaveBeenCalledTimes(1);
+    expect(next.mock.calls[0][0]?.statusCode).toBe(400);
+    expect(next.mock.calls[0][0]?.details?.fileName?.[0]).toContain("allowed video extension");
+  });
+
   it("chunk invalid query returns 400", async () => {
     const req = { query: {}, headers: {} };
     const res = makeRes();
@@ -106,6 +119,7 @@ describe("uploads.controller unit", () => {
 
     vi.mocked(prisma.uploadSession.findUnique).mockResolvedValue({
       id: uploadId,
+      fileSize: 9,
       totalChunks: 3,
       status: UPLOAD_STATUS.INITIATED,
     } as any);
@@ -116,20 +130,64 @@ describe("uploads.controller unit", () => {
     expect(next.mock.calls[0][0]?.statusCode).toBe(400);
   });
 
-  it("chunk success updates status from INITIATED", async () => {
+  it("chunk rejects wrong content-type with 415", async () => {
     const req = {
       query: { uploadId, chunkIndex: 0 },
-      headers: { "content-length": "3" },
+      headers: { "content-type": "application/json", "content-length": "3" },
     };
     const res = makeRes();
     const next = vi.fn();
 
     vi.mocked(prisma.uploadSession.findUnique).mockResolvedValue({
       id: uploadId,
+      fileSize: 9,
+      totalChunks: 3,
+      status: UPLOAD_STATUS.INITIATED,
+    } as any);
+
+    await runHandler(chunkController, req, res, next);
+
+    expect(next.mock.calls[0][0]?.statusCode).toBe(415);
+  });
+
+  it("chunk rejects quota-exceeding chunk with 400", async () => {
+    const req = {
+      query: { uploadId, chunkIndex: 0 },
+      headers: { "content-type": "application/octet-stream", "content-length": "10" },
+    };
+    const res = makeRes();
+    const next = vi.fn();
+
+    vi.mocked(prisma.uploadSession.findUnique).mockResolvedValue({
+      id: uploadId,
+      fileSize: 9,
+      totalChunks: 3,
+      status: UPLOAD_STATUS.INITIATED,
+    } as any);
+    vi.mocked(prisma.uploadChunk.aggregate).mockResolvedValue({ _sum: { size: 0 } } as any);
+
+    await runHandler(chunkController, req, res, next);
+
+    expect(next.mock.calls[0][0]?.statusCode).toBe(400);
+    expect(storeChunk).not.toHaveBeenCalled();
+  });
+
+  it("chunk success updates status from INITIATED", async () => {
+    const req = {
+      query: { uploadId, chunkIndex: 0 },
+      headers: { "content-type": "application/octet-stream", "content-length": "3" },
+    };
+    const res = makeRes();
+    const next = vi.fn();
+
+    vi.mocked(prisma.uploadSession.findUnique).mockResolvedValue({
+      id: uploadId,
+      fileSize: 9,
       totalChunks: 3,
       status: UPLOAD_STATUS.INITIATED,
     } as any);
     vi.mocked(prisma.uploadSession.update).mockResolvedValue({} as any);
+    vi.mocked(prisma.uploadChunk.aggregate).mockResolvedValue({ _sum: { size: 0 } } as any);
     vi.mocked(storeChunk).mockResolvedValue(true as any);
     vi.mocked(prisma.uploadChunk.createMany).mockResolvedValue({ count: 1 } as any);
     vi.mocked(prisma.uploadChunk.count).mockResolvedValue(1);
@@ -148,17 +206,19 @@ describe("uploads.controller unit", () => {
   it("chunk deletes file when db write fails", async () => {
     const req = {
       query: { uploadId, chunkIndex: 1 },
-      headers: { "content-length": "3" },
+      headers: { "content-type": "application/octet-stream", "content-length": "3" },
     };
     const res = makeRes();
     const next = vi.fn();
 
     vi.mocked(prisma.uploadSession.findUnique).mockResolvedValue({
       id: uploadId,
+      fileSize: 9,
       totalChunks: 3,
       status: UPLOAD_STATUS.INITIATED,
     } as any);
     vi.mocked(prisma.uploadSession.update).mockResolvedValue({} as any);
+    vi.mocked(prisma.uploadChunk.aggregate).mockResolvedValue({ _sum: { size: 3 } } as any);
     vi.mocked(storeChunk).mockResolvedValue(true as any);
     vi.mocked(prisma.uploadChunk.createMany).mockRejectedValue(new Error("db fail"));
     vi.mocked(deleteChunk).mockResolvedValue(undefined as any);
@@ -204,7 +264,31 @@ describe("uploads.controller unit", () => {
     await runHandler(completedController, req, res, next);
 
     expect(prisma.uploadSession.update).toHaveBeenCalledTimes(2);
-    expect(mergeChunks).toHaveBeenCalledWith({ uploadId });
+    expect(mergeChunks).toHaveBeenCalledWith({ uploadId, expectedChecksum: null });
+    expect(res.status).toHaveBeenCalledWith(200);
+    expect(next).not.toHaveBeenCalled();
+  });
+
+  it("complete passes the declared checksum to the merge", async () => {
+    const req = {
+      body: { uploadId, checksum: "a".repeat(64) },
+    };
+    const res = makeRes();
+    const next = vi.fn();
+
+    vi.mocked(prisma.uploadSession.findUnique).mockResolvedValue({
+      id: uploadId,
+      fileSize: 9n,
+      totalChunks: 3,
+      status: UPLOAD_STATUS.UPLOADING,
+    } as any);
+    vi.mocked(prisma.uploadChunk.count).mockResolvedValue(3);
+    vi.mocked(prisma.uploadSession.update).mockResolvedValue({} as any);
+    vi.mocked(mergeChunks).mockResolvedValue(undefined);
+
+    await runHandler(completedController, req, res, next);
+
+    expect(mergeChunks).toHaveBeenCalledWith({ uploadId, expectedChecksum: "a".repeat(64) });
     expect(res.status).toHaveBeenCalledWith(200);
     expect(next).not.toHaveBeenCalled();
   });

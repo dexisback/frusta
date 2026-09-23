@@ -52,6 +52,14 @@ export const chunkController = asyncHandler(async function chunkController(req: 
         throw new ApiError(409, `upload session is ${weFind.status.toLowerCase()} and not accepting chunks`)
     }
 
+    //the body is streamed straight to disk: it must be raw octets, otherwise express's
+    //json/urlencoded parsers consume it first and an empty file gets written to disk
+    const contentType = req.headers["content-type"];
+    const firstContentType = Array.isArray(contentType) ? contentType[0] : contentType;
+    if(!firstContentType || !firstContentType.startsWith("application/octet-stream")){
+        throw new ApiError(415, "chunk uploads must use application/octet-stream")
+    }
+
     //the body is streamed straight to disk, so its length must be declared and capped
     const rawContentLength = req.headers["content-length"];
     const contentLengthHeader = Array.isArray(rawContentLength) ? rawContentLength[0] : rawContentLength;
@@ -64,6 +72,17 @@ export const chunkController = asyncHandler(async function chunkController(req: 
         throw new ApiError(413, `chunk size exceeds the ${MAX_CHUNK_SIZE_BYTES} byte limit`)
     }
     //else: verified that content-length is a positive integer within the chunk size limit
+
+    //quota: every chunk holds at least 1 byte, so this chunk may not push the uploaded
+    //total past the fileSize declared at initiate
+    const uploadedSize = await prisma.uploadChunk.aggregate({
+        where: { uploadSessionId: uploadId },
+        _sum: { size: true },
+    })
+    if(contentLength + Number(uploadedSize?._sum?.size ?? 0) > Number(weFind.fileSize)){
+        throw new ApiError(400, "chunk would push the upload past the declared fileSize")
+    }
+    //else: verified that the remaining byte quota is not exceeded
     
     //if the incoming req is the first req, then initiate state
     if(weFind.status === UPLOAD_STATUS.INITIATED){
@@ -96,7 +115,7 @@ export const completedController = asyncHandler(async function completedControll
     if(!result.success){
         throw invalidRequest(result.error)
     }
-    const {uploadId}  = result.data
+    const {uploadId, checksum}  = result.data
     //check if upload session w the given uploadId exists:
     const check = await  prisma.uploadSession.findUnique({where: {id: uploadId}})
     if(!check){throw new ApiError(400, "invalid upload id")}
@@ -120,7 +139,7 @@ export const completedController = asyncHandler(async function completedControll
   //fix: throw error and update State to FAILEd if merge fails
   try {
     
-    await mergeChunks({uploadId})
+    await mergeChunks({uploadId, expectedChecksum: checksum ?? null})
      await prisma.uploadSession.update({
     where: { id: uploadId },
     data: {

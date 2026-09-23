@@ -2,7 +2,8 @@ node_modules
 .env
 /generated/prisma
 dist
-uploads/    
+/uploads/
+
 tests.md
 k6-implementation.md
 bench-uploads/
