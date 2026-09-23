@@ -5,14 +5,35 @@
 //a singular chunkQuery contains the chunk uploadId, chunkIndex
 
 import z from "zod"
+import {
+    MAX_CHUNK_SIZE_BYTES,
+    MAX_FILE_NAME_LENGTH,
+    MAX_FILE_SIZE_BYTES,
+    MAX_TOTAL_CHUNKS,
+    SAFE_FILE_NAME_REGEX,
+} from "./uploads.constants.js"
+
+//fileName lands inside path.join(FINAL_DIR, `${uploadId}-${fileName}`),
+//so it must never carry path separators or control characters (path traversal)
+const fileNameSchema = z
+    .string()
+    .trim()
+    .min(1, "fileName is required")
+    .max(MAX_FILE_NAME_LENGTH, `fileName must be at most ${MAX_FILE_NAME_LENGTH} characters`)
+    .regex(SAFE_FILE_NAME_REGEX, "fileName contains illegal path characters")
+
 export const chunkQuerySchema = z.object({
     uploadId: z.string().uuid(),
-    chunkIndex : z.coerce.number().int().nonnegative()
+    chunkIndex: z.coerce
+        .number()
+        .int()
+        .nonnegative()
+        .max(MAX_TOTAL_CHUNKS, `chunkIndex exceeds the ${MAX_TOTAL_CHUNKS} chunk limit`),
 })
 
 
 export const completedSandeshaSchema = z.object({
-    uploadId : z.string().uuid()
+    uploadId: z.string().uuid()
 })
 
 export const statusParamsSchema = z.object({
@@ -20,11 +41,29 @@ export const statusParamsSchema = z.object({
 })
 
 
-export const incomingSandeshaSchema = z.object({
-    fileName : z.string().min(1).max(200),
-    fileSize: z.coerce.bigint().gt(0n, {message: "file size should be greater than 0"}), //til that big int are written w a 'n' after their digits lol :/
-    totalChunks : z.coerce.number().int().gt(0)
-})
+export const incomingSandeshaSchema = z
+    .object({
+        fileName: fileNameSchema,
+        fileSize: z.coerce
+            .bigint()
+            .gt(0n, { message: "file size should be greater than 0" }) //til that big int are written w a 'n' after their digits lol :/
+            .lte(MAX_FILE_SIZE_BYTES, { message: `file size exceeds the ${MAX_FILE_SIZE_BYTES} byte limit` }),
+        totalChunks: z.coerce
+            .number()
+            .int()
+            .gt(0)
+            .max(MAX_TOTAL_CHUNKS, { message: `totalChunks exceeds the ${MAX_TOTAL_CHUNKS} chunk limit` }),
+    })
+    //every chunk holds at least 1 byte, so declared size must cover all chunks
+    .refine((data) => data.fileSize >= BigInt(data.totalChunks), {
+        message: "fileSize is smaller than totalChunks (each chunk needs at least 1 byte)",
+        path: ["fileSize"],
+    })
+    //a single chunk can never exceed MAX_CHUNK_SIZE_BYTES, so fileSize must fit within totalChunks * chunk limit
+    .refine((data) => data.fileSize <= BigInt(data.totalChunks) * BigInt(MAX_CHUNK_SIZE_BYTES), {
+        message: `fileSize is too large for ${MAX_TOTAL_CHUNKS} chunks or fewer (a chunk cannot exceed ${MAX_CHUNK_SIZE_BYTES} bytes)`,
+        path: ["fileSize"],
+    })
 
 
 

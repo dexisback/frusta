@@ -22,6 +22,7 @@ vi.mock("fs", () => {
       mkdir: vi.fn(),
       rename: vi.fn(),
       rm: vi.fn(),
+      stat: vi.fn(),
     },
   };
 
@@ -120,6 +121,48 @@ describe("uploads.service unit", () => {
     await expect(mergeChunks({ uploadId })).rejects.toThrow("upload session not found");
   });
 
+  it("mergeChunks rejects a stored fileName with illegal path characters", async () => {
+    vi.mocked(prisma.uploadSession.findUnique).mockResolvedValue({
+      id: uploadId,
+      fileName: "../../etc/cron.d/pwned",
+      fileSize: 12n,
+      totalChunks: 2,
+    } as any);
+
+    await expect(mergeChunks({ uploadId })).rejects.toThrow("illegal path characters");
+    expect(fs.createWriteStream).not.toHaveBeenCalled();
+  });
+
+  it("mergeChunks deletes the merged file when its size does not match the declared fileSize", async () => {
+    const writeStream = {
+      end: vi.fn(),
+      on: vi.fn((event: string, cb: () => void) => {
+        if (event === "finish") {
+          setImmediate(cb);
+        }
+        return writeStream;
+      }),
+    };
+
+    vi.mocked(prisma.uploadSession.findUnique).mockResolvedValue({
+      id: uploadId,
+      fileName: "merge.txt",
+      fileSize: 12n,
+      totalChunks: 2,
+    } as any);
+    vi.mocked(fs.existsSync).mockReturnValue(true);
+    vi.mocked(fs.createWriteStream).mockReturnValue(writeStream as any);
+    vi.mocked(fs.createReadStream).mockReturnValue({} as any);
+    vi.mocked(pipeline).mockResolvedValue(undefined as any);
+    vi.mocked(fs.promises.rename).mockResolvedValue(undefined as any);
+    vi.mocked(fs.promises.stat).mockResolvedValue({ size: 9 } as any); //declared 12, merged 9
+    vi.mocked(fs.promises.rm).mockResolvedValue(undefined as any);
+
+    await expect(mergeChunks({ uploadId })).rejects.toThrow("does not match the declared file size");
+    expect(fs.promises.rm).toHaveBeenCalledWith(expect.stringContaining("merge.txt"), { force: true });
+    expect(fs.promises.rm).not.toHaveBeenCalledWith(expect.stringContaining("temp"), expect.anything());
+  });
+
   it("mergeChunks happy path merges and cleans temp dir", async () => {
     const writeStream = {
       end: vi.fn(),
@@ -134,6 +177,7 @@ describe("uploads.service unit", () => {
     vi.mocked(prisma.uploadSession.findUnique).mockResolvedValue({
       id: uploadId,
       fileName: "merge.txt",
+      fileSize: 12n,
       totalChunks: 2,
     } as any);
     vi.mocked(fs.existsSync).mockReturnValue(true);
@@ -141,6 +185,7 @@ describe("uploads.service unit", () => {
     vi.mocked(fs.createReadStream).mockReturnValue({} as any);
     vi.mocked(pipeline).mockResolvedValue(undefined as any);
     vi.mocked(fs.promises.rename).mockResolvedValue(undefined as any);
+    vi.mocked(fs.promises.stat).mockResolvedValue({ size: 12 } as any);
     vi.mocked(fs.promises.rm).mockResolvedValue(undefined as any);
 
     await mergeChunks({ uploadId });

@@ -1,10 +1,12 @@
 //preps storage, manage each chunk , merge chunks, renaming, cleanup
-import { TEMP_DIR, FINAL_DIR, UPLOAD_ROOT } from "./uploads.constants.js"
+import { TEMP_DIR, FINAL_DIR, UPLOAD_ROOT, MAX_CHUNK_SIZE_BYTES, SAFE_FILE_NAME_REGEX } from "./uploads.constants.js"
 import type { StoreChunkParams,MergeChunkParams } from "./uploads.types.js"
 import fs from "fs"
 import path from "path"
+import { Transform } from "stream"
 import {pipeline} from "stream/promises"
 import {prisma} from "../../db/prisma.js"
+import { ApiError } from "../../utils/apiError.js"
 // prepareUploadDir, storeChunk, mergeChunks, 
 
 //TEMP_DIR, and FINAL_DIR
@@ -34,6 +36,23 @@ export async function prepareUploadDir(uploadId: string){
 }
 
 
+//counts the bytes flowing through and aborts the stream the moment they exceed maxBytes,
+//so a client that lies about content-length cannot keep writing to disk forever
+function byteLimiter(maxBytes: number){
+    let received = 0
+    return new Transform({
+        transform(chunk: Buffer, _encoding, callback) {
+            received += chunk.length
+            if(received > maxBytes){
+                callback(new ApiError(413, `chunk size exceeds the ${maxBytes} byte limit`))
+                return
+            }
+            callback(null, chunk)
+        },
+    })
+}
+
+
 export async function storeChunk({uploadId, chunkIndex, reqStream}: StoreChunkParams){
     const chunkPath = path.join(TEMP_DIR, uploadId, `chunk${chunkIndex}`)
     const tempChunkPath = `${chunkPath}.part`
@@ -43,7 +62,7 @@ export async function storeChunk({uploadId, chunkIndex, reqStream}: StoreChunkPa
     const writeStream = fs.createWriteStream(tempChunkPath)
 
     try {
-        await pipeline(reqStream, writeStream)
+        await pipeline(reqStream, byteLimiter(MAX_CHUNK_SIZE_BYTES), writeStream)
         await fs.promises.rename(tempChunkPath, chunkPath)
         return true
     } catch (error) {
@@ -66,6 +85,11 @@ export async function mergeChunks({uploadId}: MergeChunkParams){
     })
     if(!session){
         throw new Error("upload session not found")
+    }
+
+    //defense in depth: fileName was validated at initiate, re-check before it touches the filesystem
+    if(!SAFE_FILE_NAME_REGEX.test(session.fileName)){
+        throw new ApiError(400, "stored fileName contains illegal path characters")
     }
 
     const chunkDir = path.join(TEMP_DIR, uploadId)
@@ -93,5 +117,13 @@ export async function mergeChunks({uploadId}: MergeChunkParams){
 
 
     await fs.promises.rename(finalTempPath, finalPath)  //atomic rename 
+
+    //integrity check: the merged file must be exactly the size that was declared at initiate
+    const mergedStat = await fs.promises.stat(finalPath)
+    if(BigInt(mergedStat.size) !== session.fileSize){
+        await fs.promises.rm(finalPath, { force: true })
+        throw new ApiError(400, "merged file size does not match the declared file size")
+    }
+
     await fs.promises.rm(chunkDir, { recursive: true, force: true }) //cleanup chunk dir
 }

@@ -5,7 +5,8 @@ import uploadRoutes from "./modules/uploads/uploads.routes.js"
 import express from "express";
 const app = express();
 
-app.use(express.json())
+//json bodies are tiny metadata payloads only; the big data flows through /uploads/chunk as a raw stream
+app.use(express.json({ limit: "16kb" }))
 
 app.use(requestLogger)
 app.use("/uploads", uploadRoutes)

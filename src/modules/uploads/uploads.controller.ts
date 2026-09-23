@@ -1,16 +1,17 @@
 
-import { deleteChunk, prepareUploadDir,storeChunk, mergeChunks } from "./uploads.service.js";
+import { deleteChunk, prepareUploadDir, storeChunk, mergeChunks } from "./uploads.service.js";
 import type { Request, Response } from "express";
 import { chunkQuerySchema, completedSandeshaSchema, incomingSandeshaSchema, statusParamsSchema } from "./uploads.schema.js";
-import {prisma} from "../../db/prisma.js"
-import { UPLOAD_STATUS } from "./uploads.constants.js";
+import { prisma } from "../../db/prisma.js"
+import { MAX_CHUNK_SIZE_BYTES, UPLOAD_STATUS } from "./uploads.constants.js";
 import { ApiResponse } from "../../utils/apiResponse.js";
 import { asyncHandler } from "../../utils/asyncHandler.js";
 import { ApiError } from "../../utils/apiError.js";
+import { invalidRequest } from "../../utils/validation.js";
 export const initiateController = asyncHandler(async function initiateController(req: Request, res: Response){
     const result= incomingSandeshaSchema.safeParse(req.body)
     if(!result.success){
-        throw new ApiError(400, "invalid incoming request")
+        throw invalidRequest(result.error)
     }
     const data= result.data
 
@@ -35,7 +36,7 @@ export const chunkController = asyncHandler(async function chunkController(req: 
     //record each chunk in db
     //chunks might NOT be in order, so currnt logic would return wrong process
     const result = chunkQuerySchema.safeParse(req.query)
-    if(!result.success){throw new ApiError(400, "invalid chunk query")}
+    if(!result.success){throw invalidRequest(result.error)}
     // const data = result.data    NOT needed 
     const {uploadId, chunkIndex} = result.data    
     
@@ -45,6 +46,24 @@ export const chunkController = asyncHandler(async function chunkController(req: 
     const totalChunksCode= Number(weFind.totalChunks)
     if(chunkIndex>=totalChunksCode){ throw new ApiError(400, "the current chunk index exceeds total chunks set initially")} 
      //else: verified that uploadId exists in db, and current chunk index does not exceed
+    
+    //sessions in a terminal state cannot accept chunks anymore
+    if(weFind.status === UPLOAD_STATUS.COMPLETING || weFind.status === UPLOAD_STATUS.COMPLETED || weFind.status === UPLOAD_STATUS.FAILED){
+        throw new ApiError(409, `upload session is ${weFind.status.toLowerCase()} and not accepting chunks`)
+    }
+
+    //the body is streamed straight to disk, so its length must be declared and capped
+    const rawContentLength = req.headers["content-length"];
+    const contentLengthHeader = Array.isArray(rawContentLength) ? rawContentLength[0] : rawContentLength;
+    if(contentLengthHeader === undefined){ throw new ApiError(411, "content-length header is required for chunk uploads") }
+    const contentLength = Number(contentLengthHeader)
+    if(!Number.isSafeInteger(contentLength) || contentLength <= 0){
+        throw new ApiError(400, "invalid content-length header")
+    }
+    if(contentLength > MAX_CHUNK_SIZE_BYTES){
+        throw new ApiError(413, `chunk size exceeds the ${MAX_CHUNK_SIZE_BYTES} byte limit`)
+    }
+    //else: verified that content-length is a positive integer within the chunk size limit
     
     //if the incoming req is the first req, then initiate state
     if(weFind.status === UPLOAD_STATUS.INITIATED){
@@ -57,7 +76,7 @@ export const chunkController = asyncHandler(async function chunkController(req: 
 
     try {
         await prisma.uploadChunk.createMany({
-            data: [{ uploadSessionId: uploadId, chunkIndex, size: Number(req.headers["content-length"] ?? 0) }],
+            data: [{ uploadSessionId: uploadId, chunkIndex, size: contentLength }],
             skipDuplicates: true,
         })
     } catch (error) {
@@ -75,13 +94,15 @@ export const chunkController = asyncHandler(async function chunkController(req: 
 export const completedController = asyncHandler(async function completedController(req: Request, res: Response){
     const result = completedSandeshaSchema.safeParse(req.body)
     if(!result.success){
-        throw new ApiError(400, "invalid query")
+        throw invalidRequest(result.error)
     }
     const {uploadId}  = result.data
     //check if upload session w the given uploadId exists:
     const check = await  prisma.uploadSession.findUnique({where: {id: uploadId}})
     if(!check){throw new ApiError(400, "invalid upload id")}
     if(check.status === UPLOAD_STATUS.COMPLETED){return res.status(200).json(new ApiResponse(200, "upload already completed "))}   //this is not 4xx because this is not really an error, but rather an idempotent success
+    if(check.status === UPLOAD_STATUS.COMPLETING){throw new ApiError(409, "merge already in progress for this upload session")}
+    if(check.status === UPLOAD_STATUS.FAILED){throw new ApiError(409, "upload session failed, initiate a new upload")}
     
     //before merge , system should verify if all chunks have been uploaded count(uploadChunks) === totalChunks   (since they aint in order)
     const uploadedChunks = await prisma.uploadChunk.count({where: {uploadSessionId: uploadId}})
@@ -118,7 +139,7 @@ export const completedController = asyncHandler(async function completedControll
 export const statusController = asyncHandler(async function statusController(req: Request, res: Response){
     const result = statusParamsSchema.safeParse(req.params)
     if(!result.success){
-        throw new ApiError(400, "invalid upload id")
+        throw invalidRequest(result.error)
     }
 
     const { uploadId } = result.data
